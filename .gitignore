@@ -43,8 +43,7 @@ AGENTS.md
 
 # Local runtime secrets
 .env
-.env.*
-!.env.example
+
 
 # Local runtime artifacts and logs
 *.log
@@ -57,3 +56,19 @@ target/
 ai-docs/
 issues/
 wiki/
+
+# Test scripts (local dev only)
+test-*.sh
+test-*.bat
+
+# Runtime data files (auto-generated, not source)
+polls.json
+tickets.json
+handlers.json
+
+# Python utility/admin scripts (local dev only)
+clear_channel.py
+clear_messages.py
+fix_thongtin_inherit.py
+set_thongtin_perms.py
+mcp_client.py
