@@ -6,10 +6,15 @@ echo   Discord MCP Fork - Auto Deploy
 echo ========================================
 echo.
 
-set DISCORD_TOKEN=%DISCORD_TOKEN%
+set "DISCORD_TOKEN=%DISCORD_TOKEN%"
 set SPRING_PROFILES_ACTIVE=http
 
-echo [INFO] Token: %DISCORD_TOKEN:~0,20%...
+if defined DISCORD_TOKEN (
+  echo [INFO] Discord token configured from environment.
+) else (
+  echo [INFO] Discord token not set. Provide it via environment variable or .env.
+)
+
 echo [INFO] Profile: http
 echo [INFO] Starting...
 echo.

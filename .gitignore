@@ -43,6 +43,15 @@ AGENTS.md
 
 # Local runtime secrets
 .env
+.env.*
+!.env.example
+
+# Local runtime artifacts and logs
+*.log
+BOOT-INF/
+__pycache__/
+*.pyc
+target/
 
 # Local docs/spec drafts (not part of release commits)
 ai-docs/
