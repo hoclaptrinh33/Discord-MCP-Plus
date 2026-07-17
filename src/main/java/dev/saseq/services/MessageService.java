@@ -1,17 +1,36 @@
 package dev.saseq.services;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import net.dv8tion.jda.api.JDA;
+import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.entities.Message;
+import net.dv8tion.jda.api.entities.MessageEmbed;
 import net.dv8tion.jda.api.entities.channel.concrete.NewsChannel;
 import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
 import net.dv8tion.jda.api.entities.channel.concrete.ThreadChannel;
 import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel;
 import net.dv8tion.jda.api.entities.emoji.Emoji;
+import net.dv8tion.jda.api.utils.FileUpload;
+import net.dv8tion.jda.api.components.actionrow.ActionRow;
+import net.dv8tion.jda.api.components.buttons.Button;
+import net.dv8tion.jda.api.components.buttons.ButtonStyle;
+import net.dv8tion.jda.api.components.selections.StringSelectMenu;
+import net.dv8tion.jda.api.components.selections.SelectOption;
+import net.dv8tion.jda.api.utils.messages.MessageEditData;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.io.ByteArrayInputStream;
+import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 
 @Service
@@ -47,49 +66,98 @@ public class MessageService {
 
     /**
      * Sends a message to a specified Discord channel.
+     * Supports rich content: plain text + full embeds + buttons/select menus + file attachments (path preferred).
      *
-     * @param channelId The ID of the channel where the message will be sent.
-     * @param message   The content of the message to be sent.
+     * @param channelId    The ID of the channel where the message will be sent.
+     * @param message      Optional text content.
+     * @param embedsJson   Optional JSON array of embed objects (title, description, fields, color, author, thumbnail, image, footer...).
+     * @param componentsJson Optional JSON array of Action Rows with buttons (type 2) or string selects (type 3).
+     * @param filesJson    Optional JSON array of files. Prefer "path" (local filesystem). Also supports "base64" or "url".
      * @return A confirmation message with a link to the sent message.
      */
-    @Tool(name = "send_message", description = "Send a message to a specific channel")
+    @Tool(name = "send_message", description = "Send a message (text + full embed + buttons/select + file upload by path). Supports rich Discord messages.")
     public String sendMessage(@ToolParam(description = "Discord channel ID") String channelId,
-                              @ToolParam(description = "Message content") String message) {
+                              @ToolParam(description = "Message content (text)", required = false) String message,
+                              @ToolParam(description = "JSON array of embeds (title, description, fields, color, author, image, thumbnail, footer...)", required = false) String embedsJson,
+                              @ToolParam(description = "JSON array of ActionRow components (buttons type=2 or string selects type=3)", required = false) String componentsJson,
+                              @ToolParam(description = "JSON array of files. Preferred: [{\"path\":\"C:\\\\backup.zip\"}]. Also base64 or url supported.", required = false) String filesJson) {
         if (channelId == null || channelId.isEmpty()) {
             throw new IllegalArgumentException("channelId cannot be null");
-        }
-        if (message == null || message.isEmpty()) {
-            throw new IllegalArgumentException("message cannot be null");
         }
 
         MessageChannel channel = getMessageChannelById(channelId);
         if (channel == null) {
             throw new IllegalArgumentException("Channel not found by channelId");
         }
-        Message sentMessage = channel.sendMessage(message).complete();
+
+        List<MessageEmbed> embeds = parseEmbeds(embedsJson);
+        List<ActionRow> components = parseComponents(componentsJson);
+        List<FileUpload> files = parseFiles(filesJson);
+
+        Message sentMessage;
+        try {
+            if (!files.isEmpty()) {
+                var action = channel.sendFiles(files);
+                if (message != null && !message.isBlank()) {
+                    action = action.setContent(message);
+                }
+                if (!embeds.isEmpty()) {
+                    action.setEmbeds(embeds);
+                }
+                if (!components.isEmpty()) {
+                    action.setComponents(components);
+                }
+                sentMessage = action.complete();
+            } else if (!embeds.isEmpty() || !components.isEmpty()) {
+                if (message != null && !message.isBlank()) {
+                    sentMessage = channel.sendMessage(message)
+                            .setEmbeds(embeds)
+                            .setComponents(components)
+                            .complete();
+                } else if (!embeds.isEmpty()) {
+                    sentMessage = channel.sendMessageEmbeds(embeds)
+                            .setComponents(components)
+                            .complete();
+                } else {
+                    sentMessage = channel.sendMessageEmbeds(java.util.Collections.emptyList())
+                            .setComponents(components)
+                            .complete();
+                }
+            } else {
+                if (message == null || message.isBlank()) {
+                    throw new IllegalArgumentException("message, embedsJson or componentsJson is required");
+                }
+                sentMessage = channel.sendMessage(message).complete();
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to send message: " + e.getMessage(), e);
+        }
+
         return "Message sent successfully. Message link: " + sentMessage.getJumpUrl();
     }
 
     /**
      * Edits an existing message in a specified Discord channel.
+     * Supports updating content, embeds (e.g. progress bars), and components (add/remove buttons).
      *
      * @param channelId  The ID of the channel containing the message.
      * @param messageId  The ID of the message to be edited.
-     * @param newMessage The new content for the message.
+     * @param newMessage Optional new text content.
+     * @param embedsJson Optional new embeds JSON (replaces existing embeds).
+     * @param componentsJson Optional new components JSON (replaces buttons/selects).
      * @return A confirmation message with a link to the edited message.
      */
-    @Tool(name = "edit_message", description = "Edit a message from a specific channel")
+    @Tool(name = "edit_message", description = "Edit a message (update text/embed/components). Perfect for progress updates or dynamic buttons.")
     public String editMessage(@ToolParam(description = "Discord channel ID") String channelId,
                               @ToolParam(description = "Specific message ID") String messageId,
-                              @ToolParam(description = "New message content") String newMessage) {
+                              @ToolParam(description = "New message content (optional)", required = false) String newMessage,
+                              @ToolParam(description = "JSON array of embeds to replace with (optional)", required = false) String embedsJson,
+                              @ToolParam(description = "JSON array of ActionRow components to replace with (optional)", required = false) String componentsJson) {
         if (channelId == null || channelId.isEmpty()) {
             throw new IllegalArgumentException("channelId cannot be null");
         }
         if (messageId == null || messageId.isEmpty()) {
             throw new IllegalArgumentException("messageId cannot be null");
-        }
-        if (newMessage == null || newMessage.isEmpty()) {
-            throw new IllegalArgumentException("newMessage cannot be null");
         }
 
         MessageChannel channel = getMessageChannelById(channelId);
@@ -100,7 +168,25 @@ public class MessageService {
         if (messageById == null) {
             throw new IllegalArgumentException("Message not found by messageId");
         }
-        Message editedMessage = messageById.editMessage(newMessage).complete();
+
+        List<MessageEmbed> embeds = parseEmbeds(embedsJson);
+        List<ActionRow> components = parseComponents(componentsJson);
+
+        Message editedMessage;
+        try {
+            var editAction = messageById.editMessage(newMessage != null ? newMessage : "");
+            if (!embeds.isEmpty()) {
+                editAction.setEmbeds(embeds);
+            }
+            if (!components.isEmpty()) {
+                editAction.setComponents(components);
+            }
+            // If both content empty and no embeds/components change, still allow
+            editedMessage = editAction.complete();
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to edit message: " + e.getMessage(), e);
+        }
+
         return "Message edited successfully. Message link: " + editedMessage.getJumpUrl();
     }
 
@@ -381,5 +467,226 @@ public class MessageService {
         if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
         if (bytes < 1024 * 1024 * 1024) return String.format("%.1f MB", bytes / (1024.0 * 1024));
         return String.format("%.1f GB", bytes / (1024.0 * 1024 * 1024));
+    }
+
+    // ==================== Rich Embed / Component / File Parsers (used by send/edit + InteractionService) ====================
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    /**
+     * Parse embedsJson into JDA MessageEmbed list. Supports full spec.
+     */
+    public static List<MessageEmbed> parseEmbeds(String embedsJson) {
+        List<MessageEmbed> result = new ArrayList<>();
+        if (embedsJson == null || embedsJson.isBlank()) return result;
+
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            JsonNode arr = mapper.readTree(embedsJson);
+            if (!arr.isArray()) {
+                // allow single object too
+                arr = mapper.createArrayNode().add(arr);
+            }
+            for (JsonNode e : arr) {
+                EmbedBuilder b = new EmbedBuilder();
+                if (e.hasNonNull("title")) b.setTitle(e.get("title").asText());
+                if (e.hasNonNull("description")) b.setDescription(e.get("description").asText());
+                if (e.hasNonNull("url")) b.setUrl(e.get("url").asText());
+                if (e.hasNonNull("color")) {
+                    int color = e.get("color").isInt() ? e.get("color").asInt() : Integer.parseInt(e.get("color").asText().replace("#", ""), 16);
+                    b.setColor(color);
+                }
+                if (e.hasNonNull("timestamp")) {
+                    try { b.setTimestamp(Instant.parse(e.get("timestamp").asText())); } catch (Exception ignored) {}
+                }
+
+                // author
+                if (e.has("author") && e.get("author").isObject()) {
+                    JsonNode a = e.get("author");
+                    String name = a.path("name").asText(null);
+                    String url = a.path("url").asText(null);
+                    String icon = a.path("icon_url").asText(null);
+                    if (name != null) b.setAuthor(name, url, icon);
+                }
+                // thumbnail
+                if (e.has("thumbnail") && e.get("thumbnail").hasNonNull("url")) {
+                    b.setThumbnail(e.get("thumbnail").get("url").asText());
+                }
+                // image
+                if (e.has("image") && e.get("image").hasNonNull("url")) {
+                    b.setImage(e.get("image").get("url").asText());
+                }
+                // footer
+                if (e.has("footer") && e.get("footer").isObject()) {
+                    JsonNode f = e.get("footer");
+                    b.setFooter(f.path("text").asText(null), f.path("icon_url").asText(null));
+                }
+                // fields
+                if (e.has("fields") && e.get("fields").isArray()) {
+                    for (JsonNode f : e.get("fields")) {
+                        String name = f.path("name").asText("");
+                        String value = f.path("value").asText("");
+                        boolean inline = f.path("inline").asBoolean(false);
+                        if (!name.isBlank() && !value.isBlank()) {
+                            b.addField(name, value, inline);
+                        }
+                    }
+                }
+                result.add(b.build());
+            }
+        } catch (Exception ex) {
+            throw new IllegalArgumentException("Invalid embedsJson: " + ex.getMessage());
+        }
+        return result;
+    }
+
+    /**
+     * Parse componentsJson (ActionRows) into List<ActionRow>.
+     * Supports buttons and string select menus (primary for most bots).
+     */
+    public static List<ActionRow> parseComponents(String componentsJson) {
+        List<ActionRow> rows = new ArrayList<>();
+        if (componentsJson == null || componentsJson.isBlank()) return rows;
+
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            JsonNode arr = mapper.readTree(componentsJson);
+            if (!arr.isArray()) arr = mapper.createArrayNode().add(arr);
+
+            for (JsonNode rowNode : arr) {
+                JsonNode compsNode = rowNode.has("components") ? rowNode.get("components") : rowNode;
+                if (!compsNode.isArray()) continue;
+
+                List<net.dv8tion.jda.api.components.actionrow.ActionRowChildComponent> comps = new ArrayList<>();
+
+                for (JsonNode c : compsNode) {
+                    int type = c.path("type").asInt(0);
+                    if (type == 2) { // Button
+                        int styleInt = c.path("style").asInt(1);
+                        ButtonStyle style = switch (styleInt) {
+                            case 1 -> ButtonStyle.PRIMARY;
+                            case 2 -> ButtonStyle.SECONDARY;
+                            case 3 -> ButtonStyle.SUCCESS;
+                            case 4 -> ButtonStyle.DANGER;
+                            case 5 -> ButtonStyle.LINK;
+                            default -> ButtonStyle.PRIMARY;
+                        };
+                        String label = c.path("label").asText(null);
+                        String customId = c.path("custom_id").asText(null); // IMPORTANT: snake_case as per docs
+                        if (style == ButtonStyle.LINK) {
+                            String url = c.path("url").asText(null);
+                            if (url == null) url = c.path("url").asText("");
+                            Button btn = Button.link(url, label != null ? label : "Link");
+                            if (c.hasNonNull("emoji")) btn = btn.withEmoji(parseEmoji(c.get("emoji")));
+                            if (c.path("disabled").asBoolean(false)) btn = btn.asDisabled();
+                            comps.add(btn);
+                        } else {
+                            if (customId == null || customId.isBlank()) {
+                                throw new IllegalArgumentException("Button requires custom_id (use snake_case)");
+                            }
+                            Button btn = Button.of(style, customId, label != null ? label : "Button");
+                            if (c.hasNonNull("emoji")) btn = btn.withEmoji(parseEmoji(c.get("emoji")));
+                            if (c.path("disabled").asBoolean(false)) btn = btn.asDisabled();
+                            comps.add(btn);
+                        }
+                    } else if (type == 3) { // String Select
+                        String customId = c.path("custom_id").asText(null);
+                        if (customId == null || customId.isBlank()) {
+                            throw new IllegalArgumentException("SelectMenu requires custom_id");
+                        }
+                        String placeholder = c.path("placeholder").asText("Select...");
+                        int min = c.path("min_values").asInt(1);
+                        int max = c.path("max_values").asInt(1);
+
+                        List<SelectOption> options = new ArrayList<>();
+                        if (c.has("options") && c.get("options").isArray()) {
+                            for (JsonNode opt : c.get("options")) {
+                                String val = opt.path("value").asText("");
+                                String lbl = opt.path("label").asText(val);
+                                String desc = opt.path("description").asText(null);
+                                SelectOption so = (desc != null && !desc.isBlank())
+                                    ? SelectOption.of(lbl, val).withDescription(desc)
+                                    : SelectOption.of(lbl, val);
+                                if (opt.hasNonNull("emoji")) so = so.withEmoji(parseEmoji(opt.get("emoji")));
+                                if (opt.path("default").asBoolean(false)) so = so.withDefault(true);
+                                options.add(so);
+                            }
+                        }
+                        if (options.isEmpty()) continue;
+
+                        StringSelectMenu.Builder menu = StringSelectMenu.create(customId)
+                                .setPlaceholder(placeholder)
+                                .setMinValues(Math.max(0, min))
+                                .setMaxValues(Math.max(1, max));
+                        options.forEach(menu::addOptions);
+                        comps.add(menu.build());
+                    }
+                    // type 4= text input is for modals only
+                }
+
+                if (!comps.isEmpty()) {
+                    rows.add(ActionRow.of(comps));  // Collection overload
+                }
+            }
+        } catch (Exception ex) {
+            throw new IllegalArgumentException("Invalid componentsJson: " + ex.getMessage());
+        }
+        return rows;
+    }
+
+    private static net.dv8tion.jda.api.entities.emoji.Emoji parseEmoji(JsonNode emojiNode) {
+        if (emojiNode == null) return null;
+        if (emojiNode.hasNonNull("name")) {
+            String name = emojiNode.get("name").asText();
+            // custom emoji id support if id present
+            if (emojiNode.hasNonNull("id")) {
+                String id = emojiNode.get("id").asText();
+                boolean animated = emojiNode.path("animated").asBoolean(false);
+                return net.dv8tion.jda.api.entities.emoji.Emoji.fromCustom(name, Long.parseLong(id), animated);
+            }
+            return net.dv8tion.jda.api.entities.emoji.Emoji.fromUnicode(name);
+        }
+        return net.dv8tion.jda.api.entities.emoji.Emoji.fromUnicode(emojiNode.asText());
+    }
+
+    /**
+     * Parse filesJson. Prefers local "path". Falls back to base64 or url.
+     */
+    public static List<FileUpload> parseFiles(String filesJson) {
+        List<FileUpload> uploads = new ArrayList<>();
+        if (filesJson == null || filesJson.isBlank()) return uploads;
+
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            JsonNode arr = mapper.readTree(filesJson);
+            if (!arr.isArray()) arr = mapper.createArrayNode().add(arr);
+
+            for (JsonNode f : arr) {
+                String filename = f.path("filename").asText(null);
+                if (f.hasNonNull("path")) {
+                    Path p = Paths.get(f.get("path").asText());
+                    if (!Files.exists(p)) {
+                        throw new IllegalArgumentException("File not found at path: " + p);
+                    }
+                    byte[] bytes = Files.readAllBytes(p);
+                    String useName = (filename != null && !filename.isBlank()) ? filename : p.getFileName().toString();
+                    uploads.add(FileUpload.fromData(bytes, useName));
+                } else if (f.hasNonNull("base64")) {
+                    String b64 = f.get("base64").asText();
+                    if (b64.startsWith("data:")) b64 = b64.substring(b64.indexOf(",") + 1);
+                    byte[] bytes = Base64.getDecoder().decode(b64);
+                    String name = filename != null ? filename : "file.bin";
+                    uploads.add(FileUpload.fromData(bytes, name));
+                } else if (f.hasNonNull("url")) {
+                    String url = f.get("url").asText();
+                    byte[] bytes = URI.create(url).toURL().openStream().readAllBytes();
+                    String name = filename != null ? filename : url.substring(url.lastIndexOf('/') + 1);
+                    uploads.add(FileUpload.fromData(bytes, name));
+                }
+            }
+        } catch (Exception ex) {
+            throw new IllegalArgumentException("Invalid filesJson or file error: " + ex.getMessage());
+        }
+        return uploads;
     }
 }

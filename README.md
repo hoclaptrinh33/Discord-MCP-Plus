@@ -21,6 +21,15 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/introduction) s
 designed to integrate Discord bots with MCP-compatible applications such as Claude, ChatGPT etc. It allows AI assistants to interact with 
 Discord by managing channels, sending messages, and retrieving server information. Ideal for building powerful Discord automation and AI-driven workflows.
 
+## ✨ What this fork adds
+
+This fork extends the base Discord MCP server with additional workflow-oriented tools for richer Discord automation:
+
+- Interaction lifecycle tools: `list_pending_interactions`, `get_interaction`, `respond_interaction`, `defer_interaction`, `edit_interaction_response`, `followup_interaction`, `delete_interaction_response`, and `respond_with_modal`
+- Component-driven actions for buttons, select menus, modals, role assignment/toggling, ticket creation/closing, channel locking, and reaction actions
+- Permission and audit helpers: `check_user_permission`, `get_audit_logs`, and `register_slash_command`
+- Enhanced messaging support for sending, editing, deleting, and reading messages with embeds, components, and files
+- Fork-specific deployment helpers, documentation, and local admin/testing scripts
 
 ## 🔬 Installation
 
@@ -412,6 +421,16 @@ Remote MCP Connector:
 - [`create_emoji`](): Upload a new custom emoji to the server (base64 or image URL, max 256KB)
 - [`edit_emoji`](): Edit an existing emoji's name or role restrictions
 - [`delete_emoji`](): Permanently delete a custom emoji from the server
+
+#### Interaction Management
+- [`list_pending_interactions`](): List all pending Discord interactions waiting for response
+- [`get_interaction`](): Get full details of a specific pending interaction by token
+- [`respond_interaction`](): Respond to a pending interaction with a message (initial response)
+- [`defer_interaction`](): Defer an interaction response (acknowledge without content, for long processing)
+- [`edit_interaction_response`](): Edit the original interaction response message
+- [`followup_interaction`](): Send a followup message to an interaction (after defer)
+- [`delete_interaction_response`](): Delete the original interaction response message
+- [`respond_with_modal`](): Respond to a component interaction by opening a modal
 
 >If `DISCORD_GUILD_ID` is set, the `guildId` parameter becomes optional for all tools above.
 

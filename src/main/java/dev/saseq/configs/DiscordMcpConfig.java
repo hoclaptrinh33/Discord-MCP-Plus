@@ -15,6 +15,10 @@ import dev.saseq.services.InviteService;
 import dev.saseq.services.ChannelPermissionService;
 import dev.saseq.services.EmojiService;
 import dev.saseq.services.ForumService;
+import dev.saseq.services.InteractionService;
+import dev.saseq.services.PollService;
+import dev.saseq.services.ModalService;
+import dev.saseq.services.TicketService;
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.JDABuilder;
 import net.dv8tion.jda.api.requests.GatewayIntent;
@@ -41,7 +45,11 @@ public class DiscordMcpConfig {
                                              InviteService inviteService,
                                              ChannelPermissionService channelPermissionService,
                                              EmojiService emojiService,
-                                             ForumService forumService) {
+                                             ForumService forumService,
+                                             InteractionService interactionService,
+                                             PollService pollService,
+                                             ModalService modalService,
+                                             TicketService ticketService) {
         return MethodToolCallbackProvider.builder().toolObjects(
                 discordService,
                 messageService,
@@ -57,7 +65,11 @@ public class DiscordMcpConfig {
                 inviteService,
                 channelPermissionService,
                 emojiService,
-                forumService
+                forumService,
+                interactionService,
+                pollService,
+                modalService,
+                ticketService
         ).build();
     }
 

@@ -1,0 +1,24 @@
+{
+  "9c4776a5" : {
+    "question" : "Bạn thích Discord MCP Fork không?",
+    "messageId" : "1523771817032945665",
+    "createdAt" : 1783365909654,
+    "durationMinutes" : 60,
+    "options" : [ "Rất thích", "Thích", "Bình thường", "Không thích" ],
+    "votes" : {
+      "361408773681709056" : {
+        "username" : "cuaw_cuaw",
+        "optionIndex" : 1,
+        "timestamp" : 1783366037504
+      }
+    }
+  },
+  "52c699ad" : {
+    "question" : "Bạn thích Discord MCP Fork không?",
+    "messageId" : "1523771814755434600",
+    "createdAt" : 1783365909631,
+    "durationMinutes" : 60,
+    "options" : [ "Rất thích", "Thích", "Bình thường", "Không thích" ],
+    "votes" : { }
+  }
+}

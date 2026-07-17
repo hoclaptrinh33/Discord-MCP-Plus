@@ -8,7 +8,9 @@ import net.dv8tion.jda.api.entities.Member;
 import net.dv8tion.jda.api.entities.PermissionOverride;
 import net.dv8tion.jda.api.entities.Role;
 import net.dv8tion.jda.api.entities.channel.attribute.IPermissionContainer;
+import net.dv8tion.jda.api.entities.channel.attribute.ICategorizableChannel;
 import net.dv8tion.jda.api.entities.channel.middleman.GuildChannel;
+import net.dv8tion.jda.api.entities.channel.concrete.Category;
 import net.dv8tion.jda.api.exceptions.ErrorResponseException;
 import net.dv8tion.jda.api.exceptions.HierarchyException;
 import net.dv8tion.jda.api.exceptions.InsufficientPermissionException;
@@ -18,6 +20,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -200,5 +203,206 @@ public class ChannelPermissionService {
         }
 
         return String.format("Successfully deleted permission overwrite for %s **%s** (ID: %s) from channel", targetType, targetName, targetId);
+    }
+
+    // ==================== NEW: Part 1 - Effective Permissions ====================
+
+    /**
+     * Get the effective permissions a member has in a channel or category.
+     * This combines base role permissions + channel/category overwrites.
+     */
+    @Tool(name = "get_effective_permissions", description = "Get the list of effective permissions a user actually has in a specific channel or category (roles + overwrites)")
+    public String getEffectivePermissions(
+            @ToolParam(description = "Discord server ID", required = false) String guildId,
+            @ToolParam(description = "Channel or Category ID") String channelId,
+            @ToolParam(description = "User ID to check permissions for") String userId) {
+
+        Guild guild = getGuild(guildId);
+        GuildChannel channel = guild.getGuildChannelById(channelId);
+        if (channel == null) {
+            throw new IllegalArgumentException("Channel/Category not found by channelId");
+        }
+
+        Member member;
+        try {
+            member = guild.retrieveMemberById(userId).complete();
+        } catch (ErrorResponseException e) {
+            throw new IllegalArgumentException("User not found in this server");
+        }
+
+        // Get effective permissions for this channel
+        java.util.EnumSet<Permission> effectivePerms = member.getPermissions(channel);
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("**Effective permissions for ").append(member.getUser().getName())
+          .append("** in **").append(channel.getName()).append("**:\n\n");
+
+        if (effectivePerms.isEmpty()) {
+            sb.append("No permissions.");
+        } else {
+            effectivePerms.stream()
+                .sorted(java.util.Comparator.comparing(Permission::getName))
+                .forEach(p -> sb.append("- `").append(p.getName()).append("`\n"));
+        }
+
+        long raw = Permission.getRaw(effectivePerms);
+        sb.append("\n**Raw bitfield:** ").append(raw);
+
+        return sb.toString();
+    }
+
+    // ==================== NEW: Part 2 - Sync Permissions from Category ====================
+
+    /**
+     * Sync a channel's permission overwrites to exactly match its parent category.
+     * This is equivalent to the "Sync Permissions" button in Discord.
+     */
+    @Tool(name = "sync_channel_permissions_with_category", description = "Sync a channel's permission overwrites to match its parent category (like Discord's Sync Permissions)")
+    public String syncChannelPermissionsWithCategory(
+            @ToolParam(description = "Discord server ID", required = false) String guildId,
+            @ToolParam(description = "Channel ID to sync (must be under a category)") String channelId,
+            @ToolParam(description = "Reason for audit log", required = false) String reason) {
+
+        Guild guild = getGuild(guildId);
+        GuildChannel channel = guild.getGuildChannelById(channelId);
+        if (channel == null) {
+            throw new IllegalArgumentException("Channel not found");
+        }
+
+        if (!(channel instanceof ICategorizableChannel categorizable)) {
+            throw new IllegalArgumentException("This channel type cannot belong to a category");
+        }
+
+        Category category = categorizable.getParentCategory();
+        if (category == null) {
+            return "This channel does not belong to any category. Nothing to sync.";
+        }
+
+        if (!(channel instanceof IPermissionContainer targetContainer)) {
+            throw new IllegalArgumentException("Target channel does not support permission overwrites");
+        }
+
+        IPermissionContainer categoryContainer = category;
+
+        // Get current overrides on the target channel
+        List<PermissionOverride> currentOverrides = targetContainer.getPermissionOverrides();
+        Set<String> currentTargetIds = currentOverrides.stream()
+                .map(PermissionOverride::getId)
+                .collect(java.util.stream.Collectors.toSet());
+
+        int synced = 0;
+        int removed = 0;
+
+        // 1. Apply all category overwrites to the target channel
+        for (PermissionOverride catOverride : categoryContainer.getPermissionOverrides()) {
+            IPermissionHolder holder;
+            if (catOverride.isRoleOverride()) {
+                holder = catOverride.getRole();
+            } else {
+                holder = catOverride.getMember();
+            }
+
+            if (holder == null) continue;
+
+            try {
+                targetContainer.upsertPermissionOverride(holder)
+                        .setPermissions(catOverride.getAllowedRaw(), catOverride.getDeniedRaw())
+                        .reason(reason != null ? reason : "Synced permissions from category")
+                        .complete();
+
+                currentTargetIds.remove(catOverride.getId());
+                synced++;
+            } catch (Exception e) {
+                // Log but continue
+            }
+        }
+
+        // 2. Remove overrides that exist on the channel but not in the category
+        for (String extraId : currentTargetIds) {
+            PermissionOverride extraOverride = currentOverrides.stream()
+                    .filter(o -> o.getId().equals(extraId))
+                    .findFirst()
+                    .orElse(null);
+
+            if (extraOverride != null) {
+                try {
+                    extraOverride.delete()
+                            .reason(reason != null ? reason : "Synced permissions from category")
+                            .complete();
+                    removed++;
+                } catch (Exception e) {
+                    // continue
+                }
+            }
+        }
+
+        return String.format("Successfully synced permissions for channel **%s** from category **%s**.\n" +
+                        "• Synced/Updated: %d overwrites\n• Removed extra: %d overwrites",
+                channel.getName(), category.getName(), synced, removed);
+    }
+
+    /**
+     * Optional: Sync permissions for ALL channels under a category.
+     */
+    @Tool(name = "sync_all_channels_in_category", description = "Sync permissions for every channel under a category to match the category")
+    public String syncAllChannelsInCategory(
+            @ToolParam(description = "Discord server ID", required = false) String guildId,
+            @ToolParam(description = "Category ID") String categoryId,
+            @ToolParam(description = "Reason for audit log", required = false) String reason) {
+
+        Guild guild = getGuild(guildId);
+        Category category = guild.getCategoryById(categoryId);
+        if (category == null) {
+            throw new IllegalArgumentException("Category not found");
+        }
+
+        List<GuildChannel> children = guild.getChannels().stream()
+                .filter(ch -> ch instanceof ICategorizableChannel)
+                .map(ch -> (ICategorizableChannel) ch)
+                .filter(ch -> category.equals(ch.getParentCategory()))
+                .map(ch -> (GuildChannel) ch)
+                .collect(java.util.stream.Collectors.toList());
+
+        if (children.isEmpty()) {
+            return "No channels found under this category.";
+        }
+
+        int success = 0;
+        StringBuilder errors = new StringBuilder();
+
+        for (GuildChannel child : children) {
+            try {
+                // Reuse the logic by calling internal or duplicate minimal code
+                if (child instanceof IPermissionContainer targetContainer) {
+                    // Apply all from category
+                    for (PermissionOverride catOv : category.getPermissionOverrides()) {
+                        IPermissionHolder holder = catOv.isRoleOverride() ? catOv.getRole() : catOv.getMember();
+                        if (holder != null) {
+                            targetContainer.upsertPermissionOverride(holder)
+                                    .setPermissions(catOv.getAllowedRaw(), catOv.getDeniedRaw())
+                                    .reason(reason)
+                                    .complete();
+                        }
+                    }
+
+                    // Remove extras
+                    Set<String> catIds = category.getPermissionOverrides().stream()
+                            .map(PermissionOverride::getId).collect(java.util.stream.Collectors.toSet());
+
+                    for (PermissionOverride childOv : targetContainer.getPermissionOverrides()) {
+                        if (!catIds.contains(childOv.getId())) {
+                            childOv.delete().reason(reason).complete();
+                        }
+                    }
+                    success++;
+                }
+            } catch (Exception e) {
+                errors.append("\n- Failed for ").append(child.getName()).append(": ").append(e.getMessage());
+            }
+        }
+
+        return String.format("Synced %d/%d channels under category **%s**.%s",
+                success, children.size(), category.getName(),
+                errors.length() > 0 ? "\nErrors:" + errors : "");
     }
 }

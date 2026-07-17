@@ -4,12 +4,16 @@ import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.entities.IncomingWebhookClient;
 import net.dv8tion.jda.api.entities.Message;
 import net.dv8tion.jda.api.entities.WebhookClient;
-import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
 import net.dv8tion.jda.api.entities.Webhook;
+import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
+import net.dv8tion.jda.api.utils.FileUpload;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
+import java.net.URI;
+import java.util.Base64;
 import java.util.List;
 
 @Service
@@ -87,7 +91,7 @@ public class WebhookService {
             throw new IllegalArgumentException("No webhooks found");
         }
         List<String> formattedWebhooks = formatWebhooks(webhooks);
-        return "**Retrieved " + formattedWebhooks.size() + " messages:** \n" + String.join("\n", formattedWebhooks);
+        return "**Retrieved " + formattedWebhooks.size() + " webhooks:** \n" + String.join("\n", formattedWebhooks);
     }
 
     private List<String> formatWebhooks(List<Webhook> webhooks) {
@@ -119,5 +123,68 @@ public class WebhookService {
         }
         Message sentMessage = webhookClient.sendMessage(message).complete();
         return "Message sent successfully. Message link: " + sentMessage.getJumpUrl();
+    }
+
+    /**
+     * Edits an existing webhook.
+     *
+     * @param webhookId The ID of the webhook to edit.
+     * @param name      Optional new name for the webhook.
+     * @param avatar    Optional new avatar as base64 string or URL (http/https).
+     * @param channelId Optional new channel ID to move the webhook to.
+     * @return A confirmation message with the updated webhook details.
+     */
+    @Tool(name = "edit_webhook", description = "Edit an existing webhook (name, avatar, channel)")
+    public String editWebhook(@ToolParam(description = "Discord webhook ID") String webhookId,
+                              @ToolParam(description = "New webhook name", required = false) String name,
+                              @ToolParam(description = "New avatar as base64 string or URL (http/https)", required = false) String avatar,
+                              @ToolParam(description = "New channel ID to move webhook to", required = false) String channelId) {
+        if (webhookId == null || webhookId.isEmpty()) {
+            throw new IllegalArgumentException("webhookId cannot be null");
+        }
+
+        Webhook webhook = jda.retrieveWebhookById(webhookId).complete();
+        if (webhook == null) {
+            throw new IllegalArgumentException("Webhook not found by webhookId");
+        }
+
+        var manager = webhook.getManager();
+        boolean hasChanges = false;
+
+        if (name != null && !name.isEmpty()) {
+            manager.setName(name);
+            hasChanges = true;
+        }
+
+        if (avatar != null && !avatar.isEmpty()) {
+            byte[] avatarData;
+            if (avatar.startsWith("http://") || avatar.startsWith("https://")) {
+                try {
+                    avatarData = URI.create(avatar).toURL().openStream().readAllBytes();
+                } catch (IOException e) {
+                    throw new IllegalArgumentException("Failed to download avatar from URL: " + e.getMessage());
+                }
+            } else {
+                avatarData = Base64.getDecoder().decode(avatar);
+            }
+            manager.setAvatar(net.dv8tion.jda.api.entities.Icon.from(avatarData));
+            hasChanges = true;
+        }
+
+        if (channelId != null && !channelId.isEmpty()) {
+            TextChannel channel = jda.getTextChannelById(channelId);
+            if (channel == null) {
+                throw new IllegalArgumentException("Channel not found by channelId");
+            }
+            manager.setChannel(channel);
+            hasChanges = true;
+        }
+
+        if (!hasChanges) {
+            throw new IllegalArgumentException("At least one of name, avatar, or channelId must be provided");
+        }
+
+        manager.complete();
+        return "Updated webhook: " + webhook.getName() + " (ID: " + webhook.getId() + ")";
     }
 }
